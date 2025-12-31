@@ -1,0 +1,52 @@
+def weekly_baseline_signal(user, week_end_date):
+    # Inputs
+    L_t = get_liquid_cash(user, week_end_date)  # manual or connected
+    txns = get_transactions(user, week_end_date - 56, week_end_date)  # last 8 weeks
+
+    S_baseline = estimate_monthly_burn(user, txns)  # median-based, robust
+
+    MoF_t = L_t / max(S_baseline, 1e-6)
+    MoF_prev = get_prev_mof(user)
+
+    delta_raw = MoF_t - MoF_prev
+    epsilon = 0.2 if user.weeks_history >= 4 else 0.3
+    delta = 0 if abs(delta_raw) < epsilon else delta_raw
+
+    week_type = classify_week(user, txns, S_baseline, week_end_date, L_t, MoF_prev)
+
+    cause, leverage = None, None
+
+    if week_type == "non_representative":
+        cause = "This week was non-representative (unusual expenses), so Baseline isn’t updating your pattern from it."
+        leverage = "Your long-term trajectory is best read from a normal week."
+    elif week_type == "liquidity_event":
+        cause = "This change was driven mainly by a one-time cash event, not a change in lifestyle burn."
+        leverage = "If your baseline spending stays stable, this cushion will work for you quietly over time."
+    else:  # behavioral
+        if txns and abs(delta_raw) >= epsilon:
+            W_t = weekly_spend(txns, week_end_date)
+            W_expected = S_baseline / 4.33
+            delta_behavior = (W_expected - W_t) / S_baseline
+
+            pattern = dominant_pattern(txns, week_end_date, S_baseline, user)
+            if pattern is None:
+                cause = "Spending ran meaningfully above/below your usual baseline this week, which moved your trajectory."
+            else:
+                cause = f"Most of the change came from {pattern.description} compared to your usual pattern."
+
+            annualized = clamp(delta_behavior * (52/4.33), -6, 6)
+            leverage = f"If this holds, that’s roughly {annualized:+.1f} months of freedom over a year."
+        else:
+            cause = "This week didn’t meaningfully change your trajectory."
+            leverage = "Small variations are normal; Baseline prioritizes stability over noise."
+
+    save_week(user, MoF_t, S_baseline, delta_raw, week_type)
+    maybe_update_baseline(user, week_type, txns)
+
+    return {
+        "MoF": MoF_t,
+        "delta": delta,
+        "cause": cause,
+        "leverage": leverage,
+        "week_type": week_type,
+    }
